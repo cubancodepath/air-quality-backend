@@ -27,9 +27,7 @@ export class MeasurementsService {
   startIngestion(fileBuffer: Buffer, separator = ';', chunkSize = 500): string {
     const ingestionId = uuidv4();
     const subject = new Subject<number>();
-
     this.ingestions.set(ingestionId, { subject, total: 0, processed: 0 });
-
     this.asyncIngest(fileBuffer, separator, chunkSize, ingestionId);
     return ingestionId;
   }
@@ -40,36 +38,33 @@ export class MeasurementsService {
     chunkSize: number,
     ingestionId: string,
   ) {
-    const results: any[] = [];
+    const tempRows: any[] = [];
+    const ingestion = this.ingestions.get(ingestionId);
+    if (!ingestion) return;
+
     const readable = new Readable();
     readable.push(fileBuffer);
     readable.push(null);
 
-    const ingestion = this.ingestions.get(ingestionId);
-    if (!ingestion) return;
-
-    const tempRows: any[] = [];
     readable
       .pipe(csv({ separator }))
       .on('data', (data) => {
         tempRows.push(data);
       })
       .on('end', async () => {
+        ingestion.total = tempRows.length;
+        const results: any[] = [];
+        let rowIndex = 0;
+
         const secondReadable = new Readable();
         secondReadable.push(fileBuffer);
         secondReadable.push(null);
 
-        ingestion.total = tempRows.length;
-
-        results.length = 0;
-
-        let rowIndex = 0;
         secondReadable
           .pipe(csv({ separator }))
           .on('data', (data) => {
             rowIndex++;
             const { subject, total } = this.ingestions.get(ingestionId)!;
-
             const dateString = (data['Date'] || '').trim();
             const timeStringOriginal = (data['Time'] || '').trim();
 
@@ -102,7 +97,6 @@ export class MeasurementsService {
             subject.next(progress);
           })
           .on('end', async () => {
-            // Insertar en lotes
             for (let i = 0; i < results.length; i += chunkSize) {
               const chunk = results.slice(i, i + chunkSize);
               await this.measurementRepo.saveAll(chunk);
@@ -120,11 +114,28 @@ export class MeasurementsService {
     return this.ingestions.get(id)?.subject;
   }
 
-  async getTimeSeries(parameter: string, start?: Date, end?: Date) {
-    return this.measurementRepo.findByParameterAndDateRange(
+  async getDataForParameter(
+    parameter: string,
+    start?: Date,
+    end?: Date,
+    page?: number,
+    limit?: number,
+  ) {
+    return this.measurementRepo.findByParameterAndRange(
       parameter,
       start,
       end,
+      page,
+      limit,
     );
+  }
+
+  async getDataForDateRange(
+    start: Date,
+    end: Date,
+    page?: number,
+    limit?: number,
+  ) {
+    return this.measurementRepo.findAllByRange(start, end, page, limit);
   }
 }
