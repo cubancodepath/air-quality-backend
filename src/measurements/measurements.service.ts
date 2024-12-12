@@ -4,6 +4,7 @@ import { Subject } from 'rxjs';
 import { Readable } from 'stream';
 import { v4 as uuidv4 } from 'uuid';
 import { MeasurementRepository } from './repositories/measurement.repository';
+import { calculateAqi } from './utils/aqi-calculator';
 
 interface IngestionProgress {
   subject: Subject<number>;
@@ -76,21 +77,26 @@ export class MeasurementsService {
             const timestamp = new Date(`${year}-${month}-${day}T${timeStr}`);
             if (isNaN(timestamp.getTime())) return;
 
+            const co_gt = this.toFloat(data['CO(GT)']);
+            const pt08s5_o3 = this.toFloat(data['PT08.S5(O3)']);
+            const no2_gt = this.toFloat(data['NO2(GT)']);
+
             results.push({
               timestamp,
-              co_gt: this.toFloat(data['CO(GT)']),
+              co_gt: co_gt,
               pt08s1_co: this.toFloat(data['PT08.S1(CO)']),
               nmhc_gt: this.toFloat(data['NMHC(GT)']),
               c6h6_gt: this.toFloat(data['C6H6(GT)']),
               pt08s2_nmhc: this.toFloat(data['PT08.S2(NMHC)']),
               nox_gt: this.toFloat(data['NOx(GT)']),
               pt08s3_nox: this.toFloat(data['PT08.S3(NOx)']),
-              no2_gt: this.toFloat(data['NO2(GT)']),
+              no2_gt: no2_gt,
               pt08s4_no2: this.toFloat(data['PT08.S4(NO2)']),
-              pt08s5_o3: this.toFloat(data['PT08.S5(O3)']),
+              pt08s5_o3: pt08s5_o3,
               t: this.toFloat(data['T']),
               rh: this.toFloat(data['RH']),
               ah: this.toFloat(data['AH']),
+              air_quality_index: calculateAqi(co_gt, no2_gt, pt08s5_o3),
             });
 
             const progress = Math.floor((rowIndex / total) * 100);

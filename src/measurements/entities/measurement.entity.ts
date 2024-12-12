@@ -1,5 +1,8 @@
 import { Column, Entity, PrimaryGeneratedColumn } from 'typeorm';
 
+/**
+ * Measurement entity representing a single data point of air quality measurement.
+ */
 @Entity('measurements')
 export class MeasurementEntity {
   @PrimaryGeneratedColumn()
@@ -46,4 +49,7 @@ export class MeasurementEntity {
 
   @Column({ type: 'float', nullable: true })
   ah: number;
+
+  @Column({ type: 'float', nullable: true })
+  air_quality_index: number;
 }

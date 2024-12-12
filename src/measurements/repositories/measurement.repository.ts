@@ -24,19 +24,13 @@ export class MeasurementRepository {
     't',
     'rh',
     'ah',
+    'air_quality_index',
   ];
 
   async saveAll(data: Partial<MeasurementEntity>[]): Promise<void> {
     await this.repo.insert(data);
   }
 
-  /**
-   * Get measurements by parameter and date range.
-   * @param start Start date (mandatory)
-   * @param end End date (mandatory)
-   * @param page Page for pagination (optional)
-   * @param limit Limit of results per page (optional)
-   */
   async findByParameterAndRange(
     parameter: string,
     start?: Date,
@@ -45,7 +39,7 @@ export class MeasurementRepository {
     limit?: number,
   ): Promise<{ timestamp: Date; value: number }[]> {
     if (!this.validParams.includes(parameter)) {
-      throw new BadRequestException(`Parametro "${parameter}" no es válido`);
+      throw new BadRequestException(`Parameter "${parameter}" not valid`);
     }
 
     const qb = this.repo.createQueryBuilder('m');
@@ -69,13 +63,6 @@ export class MeasurementRepository {
     }));
   }
 
-  /**
-   * Get all measurements within a date range.
-   * @param start Start date (mandatory)
-   * @param end End date (mandatory)
-   * @param page Page for pagination (optional)
-   * @param limit Limit of results per page (optional)
-   */
   async findAllByRange(
     start: Date,
     end: Date,
