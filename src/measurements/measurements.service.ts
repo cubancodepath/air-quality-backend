@@ -1,15 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import * as csv from 'csv-parser';
-import { Subject } from 'rxjs';
+import { ReplaySubject } from 'rxjs';
 import { Readable } from 'stream';
 import { v4 as uuidv4 } from 'uuid';
 import { MeasurementRepository } from './repositories/measurement.repository';
 import { calculateAqi } from './utils/aqi-calculator';
 
-interface IngestionProgress {
-  subject: Subject<number>;
-  total: number;
+interface IngestionState {
+  status: 'idle' | 'processing' | 'completed' | 'error';
+  progress: number;
   processed: number;
+  total: number;
+  timestamp: string;
+  error?: string;
+}
+
+interface IngestionProgress {
+  subject: ReplaySubject<IngestionState>;
+  state: IngestionState;
 }
 
 @Injectable()
@@ -25,15 +33,48 @@ export class MeasurementsService {
     return isNaN(parsed) ? null : parsed;
   }
 
+  private updateIngestionState(
+    ingestionId: string,
+    partial: Partial<IngestionState>,
+  ) {
+    const ingestion = this.ingestions.get(ingestionId);
+    if (!ingestion) return;
+
+    ingestion.state = {
+      ...ingestion.state,
+      ...partial,
+      timestamp: new Date().toISOString(),
+    };
+    ingestion.subject.next(ingestion.state);
+  }
+
   startIngestion(fileBuffer: Buffer, separator = ';', chunkSize = 500): string {
     const ingestionId = uuidv4();
-    const subject = new Subject<number>();
-    this.ingestions.set(ingestionId, { subject, total: 0, processed: 0 });
+    const subject = new ReplaySubject<IngestionState>(50);
+
+    const initialState: IngestionState = {
+      status: 'idle',
+      progress: 0,
+      processed: 0,
+      total: 0,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.ingestions.set(ingestionId, {
+      subject,
+      state: initialState,
+    });
+
+    // Emitir estado inicial
+    subject.next(initialState);
+
+    // Iniciar procesamiento asíncrono
     this.asyncIngest(fileBuffer, separator, chunkSize, ingestionId);
+
     return ingestionId;
   }
 
-  private asyncIngest(
+  private async asyncIngest(
     fileBuffer: Buffer,
     separator: string,
     chunkSize: number,
@@ -43,35 +84,52 @@ export class MeasurementsService {
     const ingestion = this.ingestions.get(ingestionId);
     if (!ingestion) return;
 
-    const readable = new Readable();
-    readable.push(fileBuffer);
-    readable.push(null);
+    try {
+      // Update processed state
+      this.updateIngestionState(ingestionId, {
+        status: 'processing',
+        progress: 0,
+      });
 
-    readable
-      .pipe(csv({ separator }))
-      .on('data', (data) => {
-        tempRows.push(data);
-      })
-      .on('end', async () => {
-        ingestion.total = tempRows.length;
-        const results: any[] = [];
-        let rowIndex = 0;
+      const readable = new Readable();
+      readable.push(fileBuffer);
+      readable.push(null);
 
-        const secondReadable = new Readable();
-        secondReadable.push(fileBuffer);
-        secondReadable.push(null);
+      // Count rows
+      await new Promise((resolve, reject) => {
+        readable
+          .pipe(csv({ separator }))
+          .on('data', (data) => {
+            tempRows.push(data);
+          })
+          .on('end', resolve)
+          .on('error', reject);
+      });
 
+      this.updateIngestionState(ingestionId, {
+        total: tempRows.length,
+      });
+
+      // Segunda pasada: procesar registros
+      const results: any[] = [];
+      let rowIndex = 0;
+
+      const secondReadable = new Readable();
+      secondReadable.push(fileBuffer);
+      secondReadable.push(null);
+
+      await new Promise((resolve, reject) => {
         secondReadable
           .pipe(csv({ separator }))
           .on('data', (data) => {
             rowIndex++;
-            const { subject, total } = this.ingestions.get(ingestionId)!;
             const dateString = (data['Date'] || '').trim();
             const timeStringOriginal = (data['Time'] || '').trim();
 
             if (!dateString || !timeStringOriginal) return;
             const dateParts = dateString.split('/');
             if (dateParts.length !== 3) return;
+
             const [day, month, year] = dateParts;
             const timeStr = timeStringOriginal.replace(/\./g, ':');
             const timestamp = new Date(`${year}-${month}-${day}T${timeStr}`);
@@ -99,21 +157,38 @@ export class MeasurementsService {
               air_quality_index: calculateAqi(co_gt, no2_gt, pt08s5_o3),
             });
 
-            const progress = Math.floor((rowIndex / total) * 100);
-            subject.next(progress);
+            const progress = Math.floor((rowIndex / tempRows.length) * 100);
+            this.updateIngestionState(ingestionId, {
+              progress,
+              processed: rowIndex,
+            });
           })
-          .on('end', async () => {
-            for (let i = 0; i < results.length; i += chunkSize) {
-              const chunk = results.slice(i, i + chunkSize);
-              await this.measurementRepo.saveAll(chunk);
-            }
-            ingestion.subject.next(100);
-            ingestion.subject.complete();
-          })
-          .on('error', (err) => {
-            ingestion.subject.error(err);
-          });
+          .on('end', resolve)
+          .on('error', reject);
       });
+
+      // save chunks
+      for (let i = 0; i < results.length; i += chunkSize) {
+        const chunk = results.slice(i, i + chunkSize);
+        await this.measurementRepo.saveAll(chunk);
+      }
+
+      // mark as completed
+      this.updateIngestionState(ingestionId, {
+        status: 'completed',
+        progress: 100,
+        processed: tempRows.length,
+      });
+
+      ingestion.subject.complete();
+    } catch (error) {
+      // errors are handled here
+      this.updateIngestionState(ingestionId, {
+        status: 'error',
+        error: error.message,
+      });
+      ingestion.subject.error(error);
+    }
   }
 
   getIngestionProgress(id: string) {
